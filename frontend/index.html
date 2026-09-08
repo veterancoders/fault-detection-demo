@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Power Line Fault Detection & Diagnosis</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <h1>Power Line Fault Detection &amp; Diagnosis - ML Demo</h1>
+    <p class="subtitle">Three-phase fault classification from MATLAB/Simulink simulation data</p>
+  </header>
+
+  <main class="container">
+    <section class="card controls-card">
+      <div class="controls-row">
+        <div class="control-group">
+          <label for="fault-select">Fault type</label>
+          <select id="fault-select"></select>
+        </div>
+        <button id="run-btn" class="btn btn-primary">Run Simulation</button>
+        <button id="view-model-btn" class="btn btn-secondary">View Simulink Model</button>
+        <button id="browse-data-btn" class="btn btn-secondary">Browse Raw Data</button>
+      </div>
+      <p id="status-msg" class="status-msg"></p>
+    </section>
+
+    <section id="results-section" class="results-section" hidden>
+      <div class="card">
+        <h2>Voltage Waveforms (Va, Vb, Vc)</h2>
+        <div id="voltage-chart" class="chart"></div>
+      </div>
+
+      <div class="card">
+        <h2>Current Waveforms (Ia, Ib, Ic)</h2>
+        <div id="current-chart" class="chart"></div>
+      </div>
+
+      <div class="card">
+        <h2>Extracted RMS Features (model input)</h2>
+        <p class="card-note">Voltage and current are shown as separate charts because they're measured in different units (volts vs. amps) and sit on very different scales.</p>
+        <div class="features-grid">
+          <div>
+            <h3 class="chart-subtitle">Voltage features</h3>
+            <div id="voltage-features-chart" class="chart chart-small"></div>
+          </div>
+          <div>
+            <h3 class="chart-subtitle">Current features</h3>
+            <div id="current-features-chart" class="chart chart-small"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card result-card">
+        <h2>Prediction Result</h2>
+        <div class="result-grid">
+          <div class="result-item">
+            <span class="result-label">Actual Fault</span>
+            <span id="result-actual" class="result-value">—</span>
+          </div>
+          <div class="result-item">
+            <span class="result-label">Predicted Fault</span>
+            <span id="result-predicted" class="result-value">—</span>
+          </div>
+          <div class="result-item">
+            <span class="result-label">Confidence</span>
+            <span id="result-confidence" class="result-value">—</span>
+          </div>
+          <div class="result-item">
+            <span class="result-label">Result</span>
+            <span id="result-badge" class="badge">—</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Model Performance Comparison</h2>
+      <div class="table-wrap">
+        <table id="metrics-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Accuracy</th>
+              <th>Precision</th>
+              <th>Recall</th>
+              <th>F1-score</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Simulink model image modal -->
+  <div id="model-modal" class="modal-overlay" hidden>
+    <div class="modal modal-image">
+      <button class="modal-close" data-close-modal="model-modal">&times;</button>
+      <h2>Simulink Model</h2>
+      <img id="simulink-img" src="assets/simulink_model.png" alt="Simulink model block diagram" />
+    </div>
+  </div>
+
+  <!-- Raw CSV browser modal -->
+  <div id="data-modal" class="modal-overlay" hidden>
+    <div class="modal modal-data">
+      <button class="modal-close" data-close-modal="data-modal">&times;</button>
+      <h2>Browse Raw Data</h2>
+      <div id="csv-list" class="csv-list"></div>
+      <div id="csv-viewer" class="csv-viewer" hidden>
+        <button id="csv-back-btn" class="btn btn-secondary btn-small">&larr; Back to file list</button>
+        <h3 id="csv-viewer-title"></h3>
+        <div class="table-wrap table-scroll">
+          <table id="csv-table"></table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
