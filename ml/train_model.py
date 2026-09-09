@@ -8,10 +8,14 @@ Pipeline:
        rows to train a classifier).
     3. Run the shared extract_features() on each window -> one training
        row per window, labeled with the fault class from the filename.
-    4. Stratified 80/20 train/test split.
-    5. Train + evaluate several classifiers, print a comparison table,
-       save it to ml/model_comparison.json, and persist the best model
-       (plus its fitted StandardScaler) to ml/model.joblib.
+    4. Evaluate each candidate model with stratified k-fold cross-validation
+       (see evaluate_with_cv for why, instead of one fixed 80/20 split).
+    5. Refit the winning model on the FULL labeled dataset (cross-validation
+       is for honestly comparing/reporting performance; the model that
+       actually goes live should be trained on every labeled example
+       available, not just the folds that happened to be "training" folds).
+    6. Save the comparison table to ml/model_comparison.json, and the
+       refit best model (plus its fitted StandardScaler) to ml/model.joblib.
 
 Run from the project root:
     python ml/train_model.py
@@ -24,11 +28,13 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.base import clone
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
@@ -58,6 +64,11 @@ REQUIRED_COLUMNS = ["time", "Ia", "Ib", "Ic", "Va", "Vb", "Vc"]
 # that a single simulation produces enough labeled rows to train on.
 NUM_WINDOWS_PER_FILE = 12
 WINDOW_FRACTION = 0.2  # each window spans 20% of the run's total duration
+
+# Number of folds for cross-validated evaluation. With 12 rows/class, 5
+# folds means each fold holds out ~2-3 rows per class for testing while
+# training on the rest - a reasonable split for a dataset this size.
+N_CV_FOLDS = 5
 
 
 def check_data_files_exist() -> None:
@@ -149,11 +160,32 @@ def build_dataset() -> tuple[pd.DataFrame, pd.Series]:
     return X, y
 
 
-def evaluate_model(model, X_test, y_test) -> dict:
-    y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
+def evaluate_with_cv(model, X, y, cv) -> dict:
+    """
+    Evaluate a model with stratified k-fold cross-validation instead of one
+    fixed train/test split.
+
+    With only ~60 labeled rows total, a single 80/20 split tests on just
+    ~12 of them - too few for the resulting accuracy/precision/recall/F1 to
+    mean much, and prone to ties (several models scoring a clean 100%
+    simply because the held-out 12 rows happened to be easy). Cross-
+    validation instead rotates which rows are "held out": every one of the
+    ~60 rows gets predicted exactly once, by a fold that did NOT see it
+    during training, so the reported metrics are computed over the full
+    dataset instead of a twelfth of it - a more honest and more
+    discriminating comparison between models.
+
+    `model` is wrapped in a Pipeline([scaler, model]) by the caller so that
+    StandardScaler is fit fresh on each fold's training portion only - if
+    scaling were fit once on the whole dataset up front (as a single-split
+    evaluation typically does), statistics from each fold's held-out rows
+    would leak into what "normal" looks like during training, quietly
+    inflating every model's score.
+    """
+    y_pred = cross_val_predict(model, X, y, cv=cv)
+    accuracy = accuracy_score(y, y_pred)
     precision, recall, f1, _ = precision_recall_fscore_support(
-        y_test, y_pred, average="macro", zero_division=0
+        y, y_pred, average="macro", zero_division=0
     )
     return {
         "accuracy": round(float(accuracy), 4),
@@ -172,13 +204,7 @@ def main():
     print(f"\nTotal training rows: {len(X)} across {y.nunique()} classes")
     print(y.value_counts().to_string())
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    cv = StratifiedKFold(n_splits=N_CV_FOLDS, shuffle=True, random_state=42)
 
     candidates = {
         "Random Forest": RandomForestClassifier(
@@ -193,14 +219,12 @@ def main():
     }
 
     results = {}
-    fitted_models = {}
 
-    print("\nTraining and evaluating models...\n")
+    print(f"\nEvaluating models with {N_CV_FOLDS}-fold stratified cross-validation...\n")
     for name, model in candidates.items():
-        model.fit(X_train_scaled, y_train)
-        metrics = evaluate_model(model, X_test_scaled, y_test)
+        pipeline = Pipeline([("scaler", StandardScaler()), ("clf", clone(model))])
+        metrics = evaluate_with_cv(pipeline, X, y, cv)
         results[name] = metrics
-        fitted_models[name] = model
         print(
             f"  {name:22s} "
             f"accuracy={metrics['accuracy']:.4f}  "
@@ -210,14 +234,23 @@ def main():
         )
 
     best_name = max(results, key=lambda n: results[n]["accuracy"])
-    best_model = fitted_models[best_name]
-    print(f"\nBest model: {best_name} (accuracy={results[best_name]['accuracy']:.4f})")
+    print(f"\nBest model (by cross-validated accuracy): {best_name}")
 
     METRICS_PATH.write_text(json.dumps(results, indent=2))
     print(f"Saved model comparison metrics to {METRICS_PATH}")
 
+    # Cross-validation above is for honestly comparing/reporting model
+    # performance. The model that actually goes live should be trained on
+    # every labeled example we have, not just whatever folds happened to
+    # be "training" folds during evaluation - so refit the winner (and a
+    # fresh scaler) on the full dataset here.
+    scaler = StandardScaler()
+    X_scaled_full = scaler.fit_transform(X)
+    best_model = clone(candidates[best_name])
+    best_model.fit(X_scaled_full, y)
+
     joblib.dump({"model": best_model, "scaler": scaler, "model_name": best_name}, MODEL_PATH)
-    print(f"Saved best model + scaler to {MODEL_PATH}")
+    print(f"Saved best model + scaler (refit on full dataset) to {MODEL_PATH}")
 
 
 if __name__ == "__main__":
