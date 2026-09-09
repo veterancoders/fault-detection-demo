@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -86,6 +87,49 @@ def _load_raw_csv(fault_code: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+# The raw CSVs come straight off Simulink's variable-step solver, which
+# takes far finer time-steps right around the fault switching instant than
+# during quiet periods (30k-150k+ rows for a 0.3s run). Sending every row to
+# the browser and drawing it as one Plotly line packs huge numbers of points
+# into a handful of pixel columns, which both (a) tanks rendering
+# performance and (b) can visually alias into wobble/ringing patterns that
+# aren't actually in the signal.
+#
+# We fix this by decimating in TIME (not by row index, since row spacing is
+# wildly uneven) into a fixed number of bins, keeping - per bin - the single
+# real sample with the largest combined deviation across the bin's columns.
+# Unlike naive "take every Nth row" decimation, this can never smooth away a
+# brief spike/sag: whichever instant swung furthest from normal within a bin
+# is exactly the instant kept.
+def _decimate_preserve_extremes(df: pd.DataFrame, columns: list[str], max_points: int = 2000) -> pd.DataFrame:
+    n = len(df)
+    if n <= max_points:
+        return df
+
+    time = df["time"].to_numpy()
+    # Normalize each column by its own peak magnitude first, so columns on
+    # very different scales (e.g. thousands of volts vs. single-digit amps)
+    # contribute comparably to picking the "most extreme" sample per bin.
+    composite = np.zeros(n)
+    for col in columns:
+        values = df[col].to_numpy(dtype=float)
+        scale = np.max(np.abs(values))
+        if scale > 0:
+            composite += (values / scale) ** 2
+
+    bin_edges = np.linspace(time[0], time[-1], max_points + 1)
+    bin_idx = np.clip(np.searchsorted(bin_edges, time, side="right") - 1, 0, max_points - 1)
+
+    picks = (
+        pd.DataFrame({"bin": bin_idx, "composite": composite})
+        .groupby("bin")["composite"]
+        .idxmax()
+        .to_numpy()
+    )
+    picks = np.sort(picks)  # keep chronological order for line plotting
+    return df.iloc[picks]
+
+
 @app.get("/api/fault-types")
 def get_fault_types():
     return FAULT_TYPES
@@ -123,19 +167,27 @@ def simulate(fault_type: str = Query(...)):
         class_index = list(model.classes_).index(predicted)
         confidence = float(proba[class_index])
 
+    # Decimate voltage and current independently for charting - each keeps
+    # the real sample that deviates most within its own bin, so a current
+    # spike can't get discarded just because voltage swings more (or vice
+    # versa). Predictions above already ran on the full, non-decimated data.
+    voltage_df = _decimate_preserve_extremes(df, ["Va", "Vb", "Vc"])
+    current_df = _decimate_preserve_extremes(df, ["Ia", "Ib", "Ic"])
+
     return {
         "fault_type_actual": fault_type,
         "fault_type_predicted": predicted,
         "confidence": confidence,
         "correct": predicted == fault_type,
         "features": features,
-        "time": df["time"].tolist(),
-        "Va": df["Va"].tolist(),
-        "Vb": df["Vb"].tolist(),
-        "Vc": df["Vc"].tolist(),
-        "Ia": df["Ia"].tolist(),
-        "Ib": df["Ib"].tolist(),
-        "Ic": df["Ic"].tolist(),
+        "time_voltage": voltage_df["time"].tolist(),
+        "Va": voltage_df["Va"].tolist(),
+        "Vb": voltage_df["Vb"].tolist(),
+        "Vc": voltage_df["Vc"].tolist(),
+        "time_current": current_df["time"].tolist(),
+        "Ia": current_df["Ia"].tolist(),
+        "Ib": current_df["Ib"].tolist(),
+        "Ic": current_df["Ic"].tolist(),
         "fault_window": FAULT_WINDOWS[fault_type],
     }
 

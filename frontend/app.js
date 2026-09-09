@@ -76,7 +76,7 @@ function setStatus(msg, isError = false) {
 function renderResults(data) {
   renderWaveformChart(
     "voltage-chart",
-    data.time,
+    data.time_voltage,
     [
       { name: "Va", y: data.Va, color: PHASE_COLORS.A },
       { name: "Vb", y: data.Vb, color: PHASE_COLORS.B },
@@ -88,7 +88,7 @@ function renderResults(data) {
 
   renderWaveformChart(
     "current-chart",
-    data.time,
+    data.time_current,
     [
       { name: "Ia", y: data.Ia, color: PHASE_COLORS.A },
       { name: "Ib", y: data.Ib, color: PHASE_COLORS.B },
