@@ -1,68 +1,100 @@
 # Deploying the Fault Detection Demo to a Live Server
 
-This app has two parts that get deployed separately:
+## Architecture: one service, not two
 
-- **Frontend** — plain HTML/CSS/JS (`frontend/`). Trivial to host anywhere.
-- **Backend** — a Python FastAPI app (`backend/` + `ml/`) that needs to run
-  a Python process, not just serve static files.
+`backend/main.py` does double duty — it serves the `/api/...` JSON
+endpoints **and** mounts `frontend/` as static files at `/`
+(`app.mount("/", StaticFiles(directory="frontend", html=True), ...)`).
+So there is only **one** thing to deploy: the FastAPI app. Whatever URL it
+ends up at (`https://fault-detection-demo.onrender.com`, your own domain,
+etc.) serves both the page and the API from that same origin.
 
-The two options below cover **Vercel** (recommended — free, fast, easiest)
-and **cPanel** (if you already have shared hosting/a domain there).
+This is why `frontend/app.js` sets:
+```js
+const API_BASE = "";
+```
+Empty string means every `fetch()` call is a **relative** URL
+(`/api/fault-types`, not `http://localhost:8000/api/fault-types`), resolved
+against whatever origin actually served the page. `localhost` only means
+"this machine" — hardcoding it would only ever work on the one computer
+running `uvicorn` locally, never for anyone else opening the deployed link.
+Don't hardcode a URL here for any deployment target; leave it as `""`.
 
-> **Before either option:** train the model locally first. The live server
-> does **not** train anything — it only loads the files you already
+> **Before deploying anywhere:** train the model locally first. The live
+> server does **not** train anything — it only loads files you already
 > generated:
 > ```bash
 > python ml/train_model.py
 > ```
 > This must have already produced `ml/model.joblib` and
 > `ml/model_comparison.json`, and `data/raw/*.csv` must contain your 5 real
-> CSVs. All of these files need to be **committed to your repo** (do not
-> gitignore them) — the server just reads them, it can't create them.
+> CSVs. All of these need to be **committed to git** (don't `.gitignore`
+> them) — the server just reads them, it can't create them.
 
 ---
 
-## Option A — Vercel (recommended)
+## Option A — Render (recommended, and what's currently deployed)
 
-Vercel works best here as **two separate projects**: one for the static
-frontend, one for the Python API. This is simpler and more reliable than
-trying to serve both from a single Vercel project.
+Render runs your FastAPI app as a normal always-on Python process — no
+serverless size limits to fight with `scikit-learn`/`pandas`/`scipy`, and
+no split between frontend/backend to keep in sync.
 
-### 1. Put the project on GitHub
+### 1. Push the project to GitHub
 
 ```bash
 cd fault-detection-demo
-git init
+git init                      # skip if already a repo
 git add .
 git commit -m "Initial commit"
-```
-Add a `.gitignore` first if you don't have one:
-```
-venv/
-__pycache__/
-*.pyc
-```
-Do **not** ignore `data/raw/`, `ml/model.joblib`, or
-`ml/model_comparison.json` — Vercel needs them at deploy time.
-
-Create a new GitHub repo and push:
-```bash
 git remote add origin https://github.com/<your-username>/fault-detection-demo.git
 git push -u origin main
 ```
+Add a `.gitignore` for `venv/`, `__pycache__/`, `*.pyc` — but **do not**
+ignore `data/raw/`, `ml/model.joblib`, or `ml/model_comparison.json`.
 
-### 2. Deploy the backend (FastAPI) as a Vercel project
+### 2. Create the Web Service on Render
 
-Vercel runs Python code as serverless functions from an `api/` folder.
-Add two small files to the project root (these don't change any of your
-existing app logic — they just tell Vercel how to expose it):
+In the Render dashboard → **New** → **Web Service** → connect the repo:
+- **Root Directory:** leave blank (repo root)
+- **Runtime:** Python 3
+- **Build Command:** `pip install -r backend/requirements.txt`
+- **Start Command:** `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+- **Instance Type:** Free is fine for a demo
+
+Render assigns a `$PORT` env var at runtime — the start command above must
+bind to it (not a hardcoded `8000`), which is why it's `--port $PORT` and
+not `--port 8000`.
+
+### 3. Verify
+
+Once deployed, visit `https://<your-app>.onrender.com/api/fault-types` —
+you should get the JSON list of fault types back. Then load
+`https://<your-app>.onrender.com/` itself and click **Run Simulation**.
+No local `uvicorn` process needs to be running for this to work for anyone
+— that was the bug: with `API_BASE` hardcoded to `localhost:8000`, it only
+ever worked on your machine, with your local server up, because your
+browser's `localhost` resolved to your own machine either way.
+
+> **Free tier note:** Render's free web services spin down after ~15
+> minutes of inactivity and take 30-60s to wake back up on the next
+> request. That's normal — the first "Run Simulation" after a period of
+> no traffic will just be slow, not broken.
+
+---
+
+## Option B — Vercel
+
+Vercel can run this too, as a single Python serverless project (same
+single-origin setup as Render — `backend/main.py` already serves the
+frontend, so there's only one project to deploy here as well).
+
+Add two small files to the project root:
 
 **`api/index.py`**
 ```python
 import sys
 from pathlib import Path
 
-# Make backend/ and ml/ importable from this serverless function
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "ml"))
@@ -78,95 +110,57 @@ from backend.main import app  # noqa: E402  (Vercel looks for `app`)
 }
 ```
 
-**`requirements.txt`** must exist at the project root too (Vercel's Python
-builder looks for it there) — copy `backend/requirements.txt` to the root,
-or add a root `requirements.txt` with the same contents.
+`requirements.txt` must also exist at the project root (copy
+`backend/requirements.txt`'s contents there — Vercel's Python builder looks
+for it at the root specifically).
 
-Then:
 ```bash
 npm install -g vercel      # one-time, needs Node.js installed
 vercel login
-vercel                     # deploy a preview
-vercel --prod              # deploy to production
+vercel --prod
 ```
-Vercel will give you a URL like `https://fault-detection-api.vercel.app`.
-Test it: `https://fault-detection-api.vercel.app/api/fault-types` should
-return the JSON list of fault types.
 
-> **Known limitation:** Vercel's free-tier serverless functions have a
-> 250MB uncompressed size limit. `scikit-learn` + `pandas` + `numpy` +
-> `scipy` together are large and can get close to this. If your deploy
-> fails with a size/bundle error, this is why. In that case, a small
-> always-on host like **Render.com** or **Railway.app** (free tier,
-> deploys a FastAPI app directly with `uvicorn`, no bundle-size games) is a
-> much easier fallback for the backend specifically — same code, no
-> changes needed, just point the frontend's `API_BASE` at whichever URL
-> you end up with.
-
-### 3. Deploy the frontend as a second Vercel project
-
-```bash
-vercel --cwd frontend
-vercel --cwd frontend --prod
-```
-(Or via the Vercel dashboard: "Add New Project" → import the same GitHub
-repo → set **Root Directory** to `frontend` → deploy. No build step
-needed, it's plain static files.)
-
-### 4. Point the frontend at the deployed backend
-
-Edit `frontend/app.js`:
-```js
-const API_BASE = "https://fault-detection-api.vercel.app"; // your backend URL
-```
-Commit and redeploy the frontend project (`vercel --cwd frontend --prod`).
-
-CORS is already wide open (`allow_origins=["*"]`) in `backend/main.py`, so
-the frontend calling a different Vercel domain will work without changes.
+> **Known limitation:** Vercel's serverless functions have a 250MB
+> uncompressed size limit. `scikit-learn` + `pandas` + `numpy` + `scipy`
+> together get close to it. If the deploy fails on bundle size, that's why
+> — Render (Option A) doesn't have this problem, since it's a normal
+> process rather than a packaged function.
 
 ---
 
-## Option B — cPanel (shared hosting / your own domain)
+## Option C — cPanel (shared hosting / your own domain)
 
 Most modern cPanel hosts include **"Setup Python App"** (via CloudLinux's
-Python Selector). This runs your FastAPI app under Passenger.
+Python Selector), running your FastAPI app under Passenger.
 
 ### 1. Create the Python app
 
-In cPanel → **Setup Python App** → **Create Application**:
+cPanel → **Setup Python App** → **Create Application**:
 - Python version: highest 3.10+ available
 - Application root: e.g. `fault-detection-demo`
-- Application URL: pick a domain/subdomain, e.g. `api.yourdomain.com`
+- Application URL: your domain/subdomain
 - Application startup file: `passenger_wsgi.py`
 - Application Entry point: `application`
 
-cPanel creates a virtualenv for you and shows an activation command like:
-```bash
-source /home/<user>/virtualenv/fault-detection-demo/3.10/bin/activate
-```
-
 ### 2. Upload the project
 
-Easiest via cPanel's **Git™ Version Control** (point it at your GitHub
-repo and clone/pull into the application root), otherwise upload via File
-Manager or FTP/SFTP.
+Via cPanel's **Git™ Version Control** (point it at your GitHub repo), or
+File Manager / FTP/SFTP.
 
 ### 3. Install dependencies
 
-SSH in (or use the "Run Pip Install" box on the Setup Python App page):
 ```bash
 source /home/<user>/virtualenv/fault-detection-demo/3.10/bin/activate
 cd /home/<user>/fault-detection-demo
 pip install -r backend/requirements.txt
 pip install a2wsgi   # bridges FastAPI's ASGI interface to Passenger's WSGI
 ```
-Passenger (cPanel's process manager) expects a **WSGI** app, but FastAPI is
-**ASGI** — `a2wsgi` handles that translation, no changes to `backend/main.py`
-needed.
+Passenger expects a **WSGI** app; FastAPI is **ASGI**. `a2wsgi` bridges
+that — no changes needed to `backend/main.py`.
 
 ### 4. Add `passenger_wsgi.py`
 
-Create this file at the application root (next to `backend/`, `ml/`, etc.):
+At the application root (next to `backend/`, `ml/`, `frontend/`):
 ```python
 import sys
 from pathlib import Path
@@ -180,91 +174,58 @@ from backend.main import app as fastapi_app
 
 application = ASGIMiddleware(fastapi_app)
 ```
+Since `backend/main.py` already mounts `frontend/` itself, this one app
+serves everything — no separate static hosting step needed here either.
 
-### 5. Serve the frontend
+### 5. Restart
 
-Two ways — pick whichever is simpler for your hosting setup:
+**Setup Python App** → **Restart**, any time you upload new files or
+change code.
 
-- **Separate static hosting (simplest):** upload `frontend/` to your
-  normal `public_html` (or a subdomain's document root), and edit
-  `frontend/app.js`'s `API_BASE` to point at the Python app's URL
-  (e.g. `https://api.yourdomain.com`). Mirrors the Vercel two-project
-  approach above.
-- **Single domain, one app serves both:** add this to the bottom of
-  `backend/main.py`, **after** all the `@app.get(...)` routes are defined:
-  ```python
-  from fastapi.staticfiles import StaticFiles
-  app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
-  ```
-  Then set `API_BASE = ""` (empty string, relative) in `frontend/app.js`,
-  since the frontend and API are now on the same origin.
+### 6. Verify
 
-### 6. Restart
-
-Go back to **Setup Python App** in cPanel and click **Restart** any time
-you upload new files or change code.
-
-### 7. Verify
-
-Visit `https://api.yourdomain.com/api/fault-types` — you should get the
-JSON list of fault types back. Then load the frontend URL and click **Run
-Simulation**.
+Visit `https://yourdomain.com/api/fault-types` for the JSON list, then load
+`https://yourdomain.com/` and click **Run Simulation**.
 
 ---
 
 ## Retraining after the app is already live
 
-If you swap in new/updated CSVs, or change something in `ml/train_model.py`
-or `ml/feature_extraction.py`, you need to retrain and get the new
-`ml/model.joblib` in front of the live app. **How you do that depends on
-which hosting option you used**, because Vercel and cPanel behave very
-differently here.
+If you swap in new/updated CSVs, or change `ml/train_model.py` or
+`ml/feature_extraction.py`, you need to retrain and get the new
+`ml/model.joblib` in front of the live app. **How depends on the host:**
 
-### On Vercel — you can't run it "on" the server, and that's normal
+### Render / Vercel — retrain locally, then redeploy
 
-Vercel functions are **serverless and stateless**: there's no persistent
-machine to SSH into, and the filesystem a function runs against is
-read-only at request time. So the workflow is always: **retrain locally,
-then redeploy** —
+Both are stateless at request time (Vercel always; Render effectively so,
+since a fresh deploy replaces the running instance). There's no "SSH in and
+retrain" step:
 
 ```bash
 python ml/train_model.py          # regenerates ml/model.joblib locally
 git add ml/model.joblib ml/model_comparison.json data/raw/*.csv
 git commit -m "Retrain model on updated data"
-git push                          # auto-redeploys if the repo is linked to Vercel
-# or, without git integration:
-vercel --cwd . --prod             # (from the backend project's directory)
+git push                          # auto-redeploys if the repo is linked
 ```
-Every deploy is a fresh function build that loads whatever `model.joblib`
-is in the commit/upload — there's no separate "restart" step to remember,
-a new deploy always starts clean. (If you want this automated so you never
-retrain by hand, a GitHub Action that runs `train_model.py` and commits the
-result before Vercel's build step is the standard way — ask if you want
-that set up.)
 
-### On cPanel — you have a real server, so you actually can run it there
-
-Unlike Vercel, the cPanel Python App gives you a persistent virtualenv you
-can SSH/Terminal into directly:
+### cPanel — you have a real server, so you actually can run it there
 
 ```bash
 source /home/<user>/virtualenv/fault-detection-demo/3.10/bin/activate
 cd /home/<user>/fault-detection-demo
 python ml/train_model.py
 ```
-This overwrites `ml/model.joblib` in place on the server. Since Passenger
-(the process manager running your app) loads the model once into memory at
-startup and doesn't notice the file changing underneath it, you then need
-to **restart the app** from cPanel's **Setup Python App** page (the
-**Restart** button) for it to pick up the freshly-trained model — the exact
-same reason a local `uvicorn --reload` process doesn't pick up a new model
-file without restarting either (see "Clearing the cache" in
-`HOW_IT_WORKS.md` if that's confusing).
+This overwrites `ml/model.joblib` in place. Passenger loads the model once
+into memory at startup and won't notice the file changing underneath it —
+**Restart** the app from cPanel's Setup Python App page afterward, the same
+reason a local `uvicorn --reload` process needs a restart to pick up a
+freshly-trained model (see "Clearing the cache" in `HOW_IT_WORKS.md`).
 
-## Quick checklist before either deployment
+## Quick checklist before deploying
 
 - [ ] `python ml/train_model.py` has been run locally and succeeded
 - [ ] `ml/model.joblib` and `ml/model_comparison.json` exist and are committed
 - [ ] `data/raw/*.csv` (all 5 files) exist and are committed
 - [ ] `frontend/assets/simulink_model.png` exists and is committed
-- [ ] `frontend/app.js`'s `API_BASE` points at wherever the backend actually ends up living
+- [ ] `frontend/app.js`'s `API_BASE` is `""` (relative) — never a hardcoded
+      `localhost` or a specific deployed domain

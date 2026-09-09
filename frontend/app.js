@@ -2,7 +2,14 @@
 // Vanilla JS, no build step - everything talks to the FastAPI backend
 // at API_BASE via fetch().
 
-const API_BASE = "http://localhost:8000";
+// Empty string = relative URLs ("/api/..."), resolved against whatever
+// origin served this page. backend/main.py serves this frontend itself
+// (StaticFiles mounted at "/"), so API and frontend always share one
+// origin - locally (http://localhost:8000) and once deployed (e.g.
+// https://fault-detection-demo.onrender.com) alike. A hardcoded
+// "http://localhost:8000" here would only ever resolve on the machine
+// actually running uvicorn, not in a visitor's browser.
+const API_BASE = "";
 
 // Fixed phase identity colors, reused everywhere a phase is drawn (waveform
 // lines and feature bars alike) so "Phase A" always means the same color.
@@ -34,7 +41,7 @@ async function loadFaultTypes() {
       .map((t) => `<option value="${t.code}">${t.name}</option>`)
       .join("");
   } catch (err) {
-    setStatus("Could not reach backend API. Is it running on port 8000?", true);
+    setStatus("Could not reach backend API. Is the server running?", true);
   }
 }
 
