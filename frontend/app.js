@@ -239,12 +239,9 @@ async function loadModelMetrics() {
 // ---------- Modals ----------
 
 function setupModals() {
-  const modelModal = document.getElementById("model-modal");
+  // "View Simulink Model" is now a plain link (opens in a new tab) rather
+  // than a modal - nothing to wire up here for it.
   const dataModal = document.getElementById("data-modal");
-
-  document.getElementById("view-model-btn").addEventListener("click", () => {
-    modelModal.hidden = false;
-  });
 
   document.getElementById("browse-data-btn").addEventListener("click", () => {
     dataModal.hidden = false;
@@ -258,11 +255,9 @@ function setupModals() {
     });
   });
 
-  // Click-outside-to-close for both modals.
-  [modelModal, dataModal].forEach((overlay) => {
-    overlay.addEventListener("click", (e) => {
-      if (e.target === overlay) overlay.hidden = true;
-    });
+  // Click-outside-to-close.
+  dataModal.addEventListener("click", (e) => {
+    if (e.target === dataModal) dataModal.hidden = true;
   });
 
   document.getElementById("csv-back-btn").addEventListener("click", showCsvList);

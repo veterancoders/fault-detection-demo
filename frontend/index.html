@@ -21,7 +21,14 @@
           <select id="fault-select"></select>
         </div>
         <button id="run-btn" class="btn btn-primary">Run Simulation</button>
-        <button id="view-model-btn" class="btn btn-secondary">View Simulink Model</button>
+        <a
+          id="view-model-btn"
+          class="btn btn-secondary"
+          href="https://veterancoders.github.io/faultdetection/"
+          target="_blank"
+          rel="noopener noreferrer"
+          >View Simulink Model</a
+        >
         <button id="browse-data-btn" class="btn btn-secondary">Browse Raw Data</button>
       </div>
       <p id="status-msg" class="status-msg"></p>
@@ -94,15 +101,6 @@
       </div>
     </section>
   </main>
-
-  <!-- Simulink model image modal -->
-  <div id="model-modal" class="modal-overlay" hidden>
-    <div class="modal modal-image">
-      <button class="modal-close" data-close-modal="model-modal">&times;</button>
-      <h2>Simulink Model</h2>
-      <img id="simulink-img" src="assets/simulink_model.png" alt="Simulink model block diagram" />
-    </div>
-  </div>
 
   <!-- Raw CSV browser modal -->
   <div id="data-modal" class="modal-overlay" hidden>
